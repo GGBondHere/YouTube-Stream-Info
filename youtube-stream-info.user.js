@@ -3,7 +3,7 @@
 // @name:zh-CN   YouTube Stream Info - 网速与 CDN 地区显示
 // @name:zh-TW   YouTube Stream Info - 網速與 CDN 地區顯示
 // @namespace    urn:youtube-stream-info
-// @version      1.0.0
+// @version      1.0.1
 // @description  在 YouTube 原生播放器中显示网速与 CDN 地区，支持 MB/s、Mbps 切换及详细统计信息换算
 // @description:zh-TW 在 YouTube 原生播放器中顯示網速與 CDN 地區，支援 MB/s、Mbps 切換及詳細統計資訊換算
 // @description:en Show connection speed and CDN region in YouTube's native player, with MB/s or Mbps and conversion in Stats for nerds.
@@ -28,7 +28,7 @@
 // @grant        GM_addStyle
 // @connect      cloudflare-dns.com
 // @connect      dns.google
-// @connect      api.country.is
+// @connect      api.ipinfo.io
 // @connect      ipwho.is
 // @downloadURL  https://raw.githubusercontent.com/GGBondHere/YouTube-Stream-Info/main/youtube-stream-info.user.js
 // @updateURL    https://raw.githubusercontent.com/GGBondHere/YouTube-Stream-Info/main/youtube-stream-info.user.js
@@ -64,8 +64,8 @@
         { id: 'google', url: 'https://dns.google/resolve', rateMs: 60000 },
     ];
     const geoProviders = [
-        { id: 'country', url: 'https://api.country.is/', rateMs: 60000 },
         { id: 'ipwho', url: 'https://ipwho.is/', rateMs: 86400000 },
+        { id: 'ipinfo', url: 'https://api.ipinfo.io/lite/', rateMs: 60000 },
     ];
     const memoryStorage = new Map();
     const storage = {
@@ -91,6 +91,8 @@
         addressFamily: savedPreferences?.addressFamily === 'IPv6' ? 'IPv6' : 'IPv4',
         regionVisible: savedPreferences?.regionVisible !== false,
     };
+    const savedIpinfoToken = storage.get(`${storagePrefix}ipinfoToken`, '');
+    let ipinfoToken = typeof savedIpinfoToken === 'string' ? savedIpinfoToken.trim() : '';
 
     function aborted() {
         return new DOMException('识别已取消', 'AbortError');
@@ -427,10 +429,12 @@
             let lastError = new Error('地区不可用');
             for (const provider of geoProviders) {
                 assertLive(signal);
+                if (provider.id === 'ipinfo' && !ipinfoToken) continue;
                 try {
-                    const data = await requestJson(provider, provider.url + encodeURIComponent(ip), signal);
+                    const headers = provider.id === 'ipinfo' ? { Authorization: `Bearer ${ipinfoToken}` } : {};
+                    const data = await requestJson(provider, provider.url + encodeURIComponent(ip), signal, headers);
                     assertLive(signal);
-                    const code = provider.id === 'country' ? data.country : data.country_code;
+                    const code = data.country_code;
                     if (normalizeIp(data.ip) !== ip || !countryName(code) ||
                         (provider.id === 'ipwho' && data.success !== true)) throw new Error('地区结果无效');
                     const entry = { code, created: Date.now(), expires: Date.now() + limits.countryMs };
@@ -1137,6 +1141,21 @@
             reconcile();
             identifySelectedHost();
         });
+        add(`IPinfo Token：${ipinfoToken ? '已配置' : '未配置'}（设置）`, () => {
+            const value = prompt('输入个人 IPinfo Lite Token，仅保存在本机。留空保存可禁用备用查询。', '');
+            if (value === null) return;
+            const token = value.trim();
+            if (token && !/^[a-zA-Z0-9_-]+$/.test(token)) {
+                alert('请输入 Token 本身，不要粘贴网址或 Bearer 前缀。');
+                return;
+            }
+            if (token === ipinfoToken) return;
+            ipinfoToken = token;
+            if (token) storage.set(`${storagePrefix}ipinfoToken`, token);
+            else storage.remove(`${storagePrefix}ipinfoToken`);
+            registerMenus();
+            clearIdentificationCache();
+        });
         add('重新识别 CDN', () => invalidateCurrentRegion(true));
         add('清空识别缓存', clearIdentificationCache);
     }
@@ -1223,7 +1242,7 @@
     }
 
     try {
-        const description = { version: '1.0.0' };
+        const description = { version: '1.0.1' };
         const instance = typeof cloneInto === 'function' ? cloneInto(description, page) : description;
         instance.destroy = pageCallable(destroy);
         page[instanceKey] = instance;
